@@ -1,0 +1,56 @@
+# ====================================================================
+# PARÂMETROS DE CONFIGURAÇÃO > Move arquivo e exclui da pasta raiz.
+# ====================================================================
+
+# Configurações do FTP
+$FtpUser      = "rafael.z"        # <-- Substitua pelo seu usuário
+$FtpPass      = "Pgnncl014"          # <-- Substitua pela sua senha
+$FtpServerUri = "192.168.254.247:21"  # <-- Substitua pelo seu servidor FTP (inclua a pasta de destino se houver)
+
+# Pastas locais
+$SourceFolder = "\\ps02\METADADOS\source"  # Pasta onde os JSONs estão
+$SentFolder   = "\\ps02\METADADOS\sent" # Pasta para onde os arquivos serão movidos após o envio
+
+# ====================================================================
+# FUNÇÃO DE ENVIO FTP
+# ====================================================================
+
+function Send-ToFTP ($LocalPath, $FileName) {
+    # 1. Cria as credenciais para o cliente Web
+    $wc = New-Object System.Net.WebClient
+    $wc.Credentials = New-Object System.Net.NetworkCredential($FtpUser, $FtpPass)
+
+    # 2. Constrói o URI completo do destino no FTP
+    $Uri = $FtpServerUri + $FileName
+
+    # 3. Faz o upload do arquivo
+    $wc.UploadFile($Uri, $LocalPath)
+
+    # Não retorna nada, apenas tenta a operação
+}
+
+# ====================================================================
+# ROTINA PRINCIPAL
+# ====================================================================
+
+# 1. Garante que as pastas de destino existam
+if (-not (Test-Path $SentFolder)) { New-Item -ItemType Directory -Path $SentFolder | Out-Null }
+
+
+# 2. Loop pelos arquivos JSON na pasta de origem
+Get-ChildItem -Path $SourceFolder -File | Where-Object { $_.Extension -eq ".json" } | ForEach-Object {
+    
+    $file = $_
+    
+    # Executa a função de envio para o FTP
+    # IMPORTANTE: Sem o bloco 'try/catch', se o FTP falhar, o script PARARÁ aqui.
+    Write-Host "Tentando enviar: $($file.FullName)"
+    
+    Send-ToFTP $file.FullName $file.Name 
+    
+    # Se o envio for bem-sucedido (o script não parou), move o arquivo
+    Write-Host "Enviado com sucesso. Movendo arquivo..."
+    Move-Item -Path $file.FullName -Destination $SentFolder -Force
+}
+
+Write-Host "Processamento concluído."
