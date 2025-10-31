@@ -1,0 +1,55 @@
+# ====================================================================
+# PARÂMETROS DE CONFIGURAÇÃO - > Mantém cópia de arquivo na pasta raiz
+# ====================================================================
+
+# Configurações do FTP
+$FtpUser      = "rafael.z"        # <-- Substitua pelo seu usuário
+$FtpPass      = "Pgnncl014"          # <-- Substitua pela sua senha
+$FtpServerUri = "192.168.254.247:21"  # <-- Substitua pelo seu servidor FTP (inclua a pasta de destino se houver)
+
+# Pastas locais
+$SourceFolder = "\\ps02\METADADOS\source"           # O arquivo original será RENOMEADO aqui
+$SentFolder   = "\\ps02\METADADOS\sent"   # A CÓPIA é criada aqui
+
+# ====================================================================
+# FUNÇÃO DE ENVIO FTP
+# ====================================================================
+
+function Send-ToFTP ($LocalPath, $FileName) {
+    $wc = New-Object System.Net.WebClient
+    $wc.Credentials = New-Object System.Net.NetworkCredential($FtpUser, $FtpPass)
+    $Uri = $FtpServerUri + $FileName
+    $wc.UploadFile($Uri, $LocalPath)
+}
+
+# ====================================================================
+# ROTINA PRINCIPAL
+# ====================================================================
+
+# 1. Garante que a pasta de destino da CÓPIA exista
+if (-not (Test-Path $SentFolder)) { New-Item -ItemType Directory -Path $SentFolder | Out-Null }
+
+
+# 2. Loop pelos arquivos JSON na pasta de origem
+Get-ChildItem -Path $SourceFolder -File | Where-Object { $_.Extension -eq ".json" } | ForEach-Object {
+    
+    $file = $_
+    
+    Write-Host "Tentando enviar: $($file.FullName)"
+    
+    # *** ATENÇÃO: Se o FTP falhar, o script PARARÁ aqui! ***
+    
+    # 1. Envia para o FTP
+    Send-ToFTP $file.FullName $file.Name 
+    
+    # 2. Se o envio for bem-sucedido, COPIA o arquivo para a pasta de enviados
+    Write-Host "Enviado com sucesso. Criando CÓPIA em $SentFolder..."
+    Copy-Item -Path $file.FullName -Destination $SentFolder -Force
+    
+    # 3. Renomeia o arquivo ORIGINAL para evitar o reenvio na próxima execução
+    $NewName = $file.Name -replace "\.json$", "_ENVIADO_$(Get-Date -Format yyyyMMddhhmmss).json"
+    Write-Host "Renomeando original para $NewName"
+    Rename-Item -Path $file.FullName -NewName $NewName
+}
+
+Write-Host "Processamento concluído."
