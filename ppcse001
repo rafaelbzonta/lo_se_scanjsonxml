@@ -1,0 +1,154 @@
+import time
+import os
+import json
+import xml.etree.ElementTree as ET
+import requests
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+# --- CONFIGURAÇÕES ---
+# ⚠️ Substitua pelos seus caminhos e URLs
+PASTA_MONITORADA = r"C:\scans_pendentes"
+PASTA_PROCESSADA = r"C:\scans_processados"
+SOFTEXPERT_API_URL = "https://seu-servidor-soft.com/api/v1/documentos/upload" # URL fictícia da sua API SoftExpert
+SOFTEXPERT_HEADERS = {
+    "Authorization": "Bearer SEU_TOKEN_SOFTEXPERT",
+    "Content-Type": "application/json"
+}
+
+# --- FUNÇÕES CORE ---
+
+def enviar_para_softexpert(metadados: dict, caminho_arquivo: str) -> bool:
+    """
+    Função que faz a chamada à API da SoftExpert para arquivar o documento.
+    (Você e seu colega precisarão ajustar esta função para a API real da SoftExpert)
+    """
+    print(f"Tentando enviar para SoftExpert: {os.path.basename(caminho_arquivo)}")
+    
+    # 1. Preparar os dados (metadados do PaperCut + conteúdo binário do arquivo)
+    
+    # Exemplo: Ler o arquivo de digitalização em formato binário
+    try:
+        with open(caminho_arquivo, 'rb') as f:
+            arquivo_data = f.read()
+    except Exception as e:
+        print(f"Erro ao ler o arquivo {caminho_arquivo}: {e}")
+        return False
+    
+    # 2. Montar a requisição multipart/form-data (Pode variar conforme a API da SoftExpert)
+    # A maioria das APIs de upload de documentos exige este formato.
+    
+    files = {
+        'documento': (os.path.basename(caminho_arquivo), arquivo_data),
+    }
+    data = {
+        'username': metadados.get('username'),
+        'data_digitalizacao': metadados.get('scan_date'),
+        'conta_cobranca': metadados.get('account_name'),
+        # Adicione outros campos necessários para a indexação da SoftExpert aqui
+        'metadados_json': json.dumps(metadados)
+    }
+
+    try:
+        # A chamada à API pode mudar (usar `data` ou `json`) dependendo do que a SoftExpert espera.
+        response = requests.post(
+            SOFTEXPERT_API_URL, 
+            headers={"Authorization": SOFTEXPERT_HEADERS["Authorization"]}, # Headers sem Content-Type para requisições com 'files'
+            data=data, 
+            files=files
+        )
+        
+        if response.status_code == 200:
+            print(f"✅ Sucesso! Documento arquivado na SoftExpert.")
+            return True
+        else:
+            print(f"❌ Erro na SoftExpert (Status {response.status_code}): {response.text}")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Erro de conexão com a API da SoftExpert: {e}")
+        return False
+
+
+def processar_digitalizacao(caminho_xml: str):
+    """
+    Lê o XML/JSON do PaperCut, encontra o arquivo de digitalização e chama o envio.
+    """
+    # É CRÍTICO esperar um pouco para garantir que o PaperCut terminou de escrever AMBOS os arquivos
+    time.sleep(1) 
+    
+    try:
+        # 1. Parsear o XML (Se você escolher JSON, usará json.loads)
+        tree = ET.parse(caminho_xml)
+        root = tree.getroot()
+        
+        # 2. Extrair os metadados
+        metadados = {
+            'username': root.findtext('./user/username'),
+            'job_id': root.findtext('./scan-job-id'),
+            'account_name': root.findtext('./cost-analysis/account-name'),
+            'caminho_arquivo_scan': root.findtext('./files/file/path'), # O PaperCut pode fornecer o caminho, mas geralmente o nome é o mesmo.
+            'scan_date': root.findtext('./time-stamp'),
+        }
+        
+        # 3. Determinar o nome do arquivo de digitalização (e.g., PDF)
+        # O PaperCut geralmente nomeia o XML/JSON e o arquivo de scan (PDF/TIF) de forma idêntica (exceto a extensão)
+        
+        # Exemplo: "scan_12345.xml" -> "scan_12345.pdf"
+        base_name = os.path.splitext(os.path.basename(caminho_xml))[0]
+        caminho_arquivo = os.path.join(PASTA_MONITORADA, f"{base_name}.pdf") # Assumindo PDF
+
+        if not os.path.exists(caminho_arquivo):
+            # Tente .tif, .tiff, etc.
+            caminho_arquivo = os.path.join(PASTA_MONITORADA, f"{base_name}.tif") 
+            if not os.path.exists(caminho_arquivo):
+                print(f"❌ Erro: Não encontrei o arquivo de digitalização correspondente para {base_name}.xml")
+                return
+
+        # 4. Enviar e Gerenciar o Arquivo
+        if enviar_para_softexpert(metadados, caminho_arquivo):
+            # 5. Mover para a pasta de processados
+            print("Movendo arquivos para a pasta de processados...")
+            os.rename(caminho_xml, os.path.join(PASTA_PROCESSADA, os.path.basename(caminho_xml)))
+            os.rename(caminho_arquivo, os.path.join(PASTA_PROCESSADA, os.path.basename(caminho_arquivo)))
+            
+    except ET.ParseError:
+        print(f"❌ Erro de parseamento XML: O arquivo {caminho_xml} não é um XML válido.")
+    except Exception as e:
+        print(f"❌ Erro desconhecido no processamento: {e}")
+
+
+# --- CLASSE HANDLER DO WATCHDOG ---
+
+class ScanFileHandler(FileSystemEventHandler):
+    def on_created(self, event):
+        """Acionado quando um novo arquivo é criado na pasta."""
+        if not event.is_directory:
+            if event.src_path.lower().endswith(".xml"):
+                print(f"Arquivo de metadados detectado: {event.src_path}")
+                processar_digitalizacao(event.src_path)
+
+# --- INÍCIO DO SERVIÇO ---
+
+if __name__ == "__main__":
+    
+    # Garante que as pastas existem
+    os.makedirs(PASTA_PROCESSADA, exist_ok=True)
+    os.makedirs(PASTA_MONITORADA, exist_ok=True)
+    
+    event_handler = ScanFileHandler()
+    observer = Observer()
+    observer.schedule(event_handler, PASTA_MONITORADA, recursive=False)
+    observer.start()
+
+    print(f"Serviço de Conector PaperCut-SoftExpert iniciado.")
+    print(f"Monitorando a pasta: {PASTA_MONITORADA}")
+    
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    
+    observer.join()
+    print("Serviço finalizado.")
